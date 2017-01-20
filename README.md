@@ -35,6 +35,7 @@ already forked this repo.
   - [Git & Code Review](#git-&-code-review)
   - [Style & Naming Conventions](#style-&-naming-conventions)
   - [Autograder Output](#autograder-output)
+- [Troubleshooting](#troubleshooting)
 - [License](#license)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -390,6 +391,10 @@ principles to have in mind when writing an autograder.
 Here's an example of the output from ForceLab:
 
 ![ForceLab output](https://cloud.githubusercontent.com/assets/5544532/18819601/c710c9b4-8361-11e6-8cfe-6fd1d9d794ae.png)
+
+## Troubleshooting
+
+If bask seems to be misbehaving in some way, try updating your bash.
 
 
 ## License
