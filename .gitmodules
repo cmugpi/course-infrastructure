@@ -1,0 +1,3 @@
+[submodule "shared/bask"]
+	path = shared/bask
+	url = https://github.com/jez/bask
