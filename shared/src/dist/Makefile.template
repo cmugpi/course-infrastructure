@@ -1,0 +1,2 @@
+handin.zip: {{REQUIRED_FILES}}
+	zip handin {{REQUIRED_FILES}}

@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+
+# Change into where Baskfile is. http://stackoverflow.com/a/4774063
+pushd "$(dirname "${BASH_SOURCE[0]}")" > /dev/null
+
+LABDIR=$(pwd -P)
+LABNAME="$(basename "$LABDIR")"
+
+# shellcheck disable=1091
+source ../shared/bask/src/bask.sh
+
+alias cc="bask_colorize cyan"
+
+# ----- variables ----- {{{
+# --- common variables ---
+BUILD='./build'
+
+# --- intermediate variables ---
+_HANDOUT_DIR="$BUILD/.handout/$LABNAME"
+_TEST_SANDBOX="$BUILD/.test-sandbox"
+
+# --- output variables ---
+AUTOLAB_DIR="$BUILD/autolab"
+SANDBOX_DIR="$BUILD/sandbox"
+REFSOL_DIR="$BUILD/sandbox-refsol"
+
+HANDOUT_ZIP="$BUILD/${LABNAME}-handout.zip"
+TEST_ONE_ZIP="$BUILD/handin.zip"
+
+# }}}
+
+# ----- public targets ----- {{{
+task_default() {
+  bask_log_warning "Available tasks:"
+  bask_log "$(cc autograder)     -- Populate '$(cc "$AUTOLAB_DIR")' with the autograding files"
+  bask_log "$(cc handout)        -- Make '$(cc "$HANDOUT_ZIP")'"
+  bask_log "$(cc test)           -- Run all the automated tests for $LABNAME"
+  bask_log "$(cc test_one)       -- Run $LABNAME's autograder against '$(cc "$TEST_ONE_ZIP")'"
+  bask_log "$(cc sandbox)        -- Stage the bare handout files at '$(cc "$SANDBOX_DIR")'"
+  bask_log "$(cc sandbox_refsol) -- Stage the handout with refsol at '$(cc "$REFSOL_DIR")'"
+  bask_log "$(cc clean)          -- Destroy all build artifacts"
+}
+
+task_handout() {
+  bask_depends handout_setup || return
+
+  # go to the parent so that the <labname> folder is in the current directory
+  pushd "$_HANDOUT_DIR/.." > /dev/null
+
+  # Absolute path because we're in .handout right now
+  zip -r "$LABDIR/$HANDOUT_ZIP" "$LABNAME" > /dev/null
+
+  popd > /dev/null
+
+  staged_at "$HANDOUT_ZIP"
+}
+
+task_sandbox() {
+  bask_depends handout_setup || return
+
+  cp -r "$_HANDOUT_DIR"/* "$SANDBOX_DIR"
+
+  staged_at "$SANDBOX_DIR"
+  sandbox_warning
+}
+
+task_sandbox_refsol() {
+  bask_depends handout_setup || return
+
+  cp -r "$_HANDOUT_DIR"/* "$REFSOL_DIR"
+  cp -r src/refsol/* "$REFSOL_DIR"
+
+  staged_at "$REFSOL_DIR"
+  sandbox_warning
+}
+
+task_autograder() {
+  bask_depends handout_setup || return
+
+  mkdir -p "$AUTOLAB_DIR/src/dist"
+  cp -r "$_HANDOUT_DIR"/* "$AUTOLAB_DIR/src/dist"
+
+  bask_depends \
+    autolab_driver_private \
+    autolab_config \
+    autolab_shared \
+    autolab_autograde_tar \
+    autolab_cleanup \
+    autolab_handout \
+    || return
+
+  staged_at "$AUTOLAB_DIR"
+}
+
+task_test() {
+  bask_depends autograder || return
+
+  bask_log_warning "Empty zipfile test..."
+  test_empty_zip || return
+  bask_log_success "Empty zipfile test passed."
+
+  bask_log_warning "Original handout as handin test..."
+  test_handin_for "sandbox" || return
+  bask_log_success "Original handout as handin test passed."
+
+  bask_log_warning "Refsol handin test..."
+  test_handin_for "sandbox_refsol" || return
+  bask_log_success "Refsol handin test passed."
+
+  bask_log
+  bask_log_success "All tests passed."
+}
+
+task_test_one() {
+  if [ ! -e "$TEST_ONE_ZIP" ]; then
+    bask_log_error "No file at '$TEST_ONE_ZIP'. Make or create it before continuing."
+    return 1
+  fi
+
+  bask_depends autograder || return
+
+  bask_depends test_setup
+  cp "$TEST_ONE_ZIP" "$_TEST_SANDBOX"
+  simulate_autolab
+  bask_depends test_cleanup
+
+  bask_log "Test run done. Output from the autograder is above."
+}
+
+task_clean() {
+  rm -rf "$BUILD"
+}
+
+# }}}
+
+# ----- internal targets ----- {{{
+# --- handout and sandbox helpers --- {{{
+task_folders() {
+  mkdir -p "$AUTOLAB_DIR"
+  mkdir -p "$SANDBOX_DIR"
+  mkdir -p "$REFSOL_DIR"
+  mkdir -p "$_HANDOUT_DIR"
+}
+
+task_no_ignored() {
+  if [ "$(git status --ignored --porcelain src ../shared \
+          | grep -c '^!!')" -ne 0 ]; then
+
+    bask_log_warning "You have git-ignored files."
+    bask_log "These will be copied into generated outputs"
+    bask_log "(due to globs and cp -r commands), so please remove them."
+    bask_log "Note: you can choose to remove or not remove 'untracked'"
+    bask_log "file, but these will be copied as well."
+
+    git status --ignored src ../shared
+
+    return 1
+  fi
+}
+
+task_dist() {
+  bask_depends no_ignored || return
+
+  cp -r src/dist/* "$_HANDOUT_DIR"
+}
+
+task_student_mkfile() {
+  local pattern
+  pattern="s/{{REQUIRED_FILES}}/$(echo "$REQUIRED_FILES" | xargs)/"
+  local template="../shared/src/dist/Makefile.template"
+  local output="$_HANDOUT_DIR/Makefile"
+
+  # create Makefile from template, replacing REQUIRED_FILES
+  sed -e "$pattern" "$template" > "$output"
+}
+
+task_driver_public() {
+  # Check whether there are any files in driver-public
+  if compgen -G "src/driver-public/*" > /dev/null; then
+    cp -r src/driver-public/* "$_HANDOUT_DIR/driver"
+  fi
+}
+
+task_handout_setup() {
+  # Read config variables like REQUIRED_FILES from `config` in LABDIR
+  # shellcheck disable=1091
+  source "config" || return
+
+  bask_depends folders student_mkfile dist driver_public || return
+}
+
+sandbox_warning() {
+  bask_log_warning "Caveats:"
+  bask_log "    Other tasks overwrite the sandbox for intermediate tasks."
+  bask_log "    Make sure you back up changes you make within the sandbox"
+  bask_log "    before running other bask commands"
+}
+
+staged_at() {
+  local location="$1"
+  bask_log_success "Done staging file(s)."
+  bask_log_success "See them at '$(cc "$location")'."
+}
+
+# --- }}}
+
+# --- autograder helpers --- {{{
+task_autolab_config() {
+  cp config "$AUTOLAB_DIR"
+}
+
+task_autolab_driver_private() {
+  # Check whether there are any files in driver-private
+  if compgen -G "src/driver-private/*" > /dev/null; then
+    cp -r src/driver-private/* "$AUTOLAB_DIR/src/dist/driver"
+  fi
+}
+
+task_autolab_shared() {
+  cp -r ../shared/src/autolab/* "$AUTOLAB_DIR"
+}
+
+task_autolab_autograde_tar() {
+  tar cf "$AUTOLAB_DIR/autograde.tar" \
+    -C "$AUTOLAB_DIR" \
+    config \
+    autograder.sh \
+    src \
+    || return
+}
+
+task_autolab_cleanup() {
+  rm -rf "$AUTOLAB_DIR"/{config,autograder.sh,src}
+}
+
+task_autolab_handout() {
+  bask_depends handout || return
+
+  cp "$HANDOUT_ZIP" "$AUTOLAB_DIR"
+}
+
+# }}}
+
+# --- testing helpers --- {{{
+task_test_setup() {
+  mkdir -p "$_TEST_SANDBOX"
+
+  cp -r "$AUTOLAB_DIR"/* "$_TEST_SANDBOX"
+}
+task_test_cleanup() {
+  rm -r "$_TEST_SANDBOX"
+}
+
+simulate_handin() {
+  handin_type="$1"
+
+  case "$handin_type" in
+    empty)
+      # Make and "submit" empty zipfile
+      touch foo.txt
+      zip handin foo.txt &> /dev/null
+      rm foo.txt
+      mv handin.zip "$_TEST_SANDBOX"
+      ;;
+    sandbox)
+      pushd "$SANDBOX_DIR" > /dev/null
+      type -t simulate_handin_config_hook && simulate_handin_config_hook
+      make > /dev/null
+      popd > /dev/null
+      cp "$SANDBOX_DIR/handin.zip" "$_TEST_SANDBOX"
+      ;;
+    sandbox_refsol)
+      pushd "$REFSOL_DIR" > /dev/null
+      make > /dev/null
+      popd > /dev/null
+      cp "$REFSOL_DIR/handin.zip" "$_TEST_SANDBOX"
+      ;;
+  esac
+}
+
+simulate_autolab() {
+  pushd "$_TEST_SANDBOX" > /dev/null
+  make -f autograde-Makefile
+  local result=$?
+  popd > /dev/null
+  return $result
+}
+
+test_empty_zip() {
+  bask_depends test_setup
+
+  simulate_handin empty
+
+  # Simulate Autolab autograding process
+  local output
+  output=$(simulate_autolab 2>&1)
+  result=$?
+
+  bask_log_info "Output from autograder:"
+  echo "$output"
+
+  local failed=0
+  if ! grep 'Missing required file' <<< "$output"; then
+    bask_log_error "Error: Was expecting 'Missing required file' warning."
+    failed=1
+  elif [ $result -eq 0 ]; then
+    bask_log_error "Error: Wasn't expecting return code of 0"
+    failed=1
+  fi
+
+  bask_depends test_cleanup
+  return $failed
+}
+
+test_handin_for() {
+  local handin_type="$1"
+
+  bask_depends test_setup "$handin_type"
+
+  simulate_handin "$handin_type"
+
+  local output
+  output=$(simulate_autolab 2>&1)
+  result=$?
+
+  bask_log_info "Output from autograder:"
+  echo "$output"
+
+  failed=0
+  if grep 'Missing required file' <<< "$output"; then
+    bask_log_error "Error: Wasn't expecting 'Missing required file' warning."
+    failed=1
+  elif [ $result -ne 0 ]; then
+    bask_log_error "Error: Was expecting autograding success."
+    failed=1
+  fi
+
+  bask_depends test_cleanup
+  return $failed
+}
+
+# }}}
+# }}}
+
+# vim:fdm=marker
