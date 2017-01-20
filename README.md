@@ -47,7 +47,7 @@ There is minimal setup required before you can develop with these labs.
 First, do a deep clone (because we're using submodules):
 
 ```
-git clone --recursive https://github.com/cmugpi/labs
+git clone --recursive <your fork here>
 ```
 
 Next, install the [`bask`][bask] CLI, which is a simple task runner for Bash
